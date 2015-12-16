@@ -376,11 +376,3 @@ if __name__ == '__main__':
 
 
 	pprint(clf.grid_scores_)
-
-
-
-#	for i in clf.grid_scores_:
- #	   print(i)
-
-#	for i in range(0,len(predicted)):
- #	   print( "%d, %d, %f, %f" % (trainlabels[i], predicted[i], resultProbabilities[i][0], resultProbabilities[i][1]))
