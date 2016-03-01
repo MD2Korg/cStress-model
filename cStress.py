@@ -529,7 +529,7 @@ if __name__ == '__main__':
     # featuresused = range(args.featureStart - 1, args.featureEnd)
     featuresused = range(0, 37)
 
-	features = readFeatures(args.featureFolder)
+    features = readFeatures(args.featureFolder)
 	groundtruth = readStressmarks(args.featureFolder)
 
 	traindata, trainlabels, subjects = analyze_events_with_features(features, groundtruth)
