@@ -25,40 +25,32 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import argparse
-from collections import Counter
-from pathlib import Path
-import math
-import numpy as np
-import scipy
-from pprint import pprint
-import time
-from collections import Mapping, namedtuple, Sized
-
-from sklearn import svm, metrics, cross_validation, preprocessing
-from sklearn.cross_validation import LabelKFold
-from sklearn import grid_search
-from sklearn.grid_search import GridSearchCV,RandomizedSearchCV,ParameterSampler,ParameterGrid
-from sklearn.externals.joblib import Parallel, delayed
-from sklearn.base import clone,is_classifier
-from sklearn.utils.validation import _num_samples, indexable
-from sklearn.cross_validation import check_cv
-
 import json
-from json import JSONEncoder
-
+import numpy as np
+from collections import Counter
+from collections import Sized
+from pathlib import Path
+from pprint import pprint
+from sklearn import svm, metrics, preprocessing
+from sklearn.base import clone, is_classifier
+from sklearn.cross_validation import LabelKFold
+from sklearn.cross_validation import check_cv
+from sklearn.externals.joblib import Parallel, delayed
+from sklearn.grid_search import GridSearchCV, RandomizedSearchCV, ParameterSampler, ParameterGrid
+from sklearn.utils.validation import _num_samples, indexable
 
 # Command line parameter configuration
 
 parser = argparse.ArgumentParser(description='Train and evaluate the cStress model')
 parser.add_argument('--featureFolder', dest='featureFolder', required=True,
 					help='Directory containing feature files')
-parser.add_argument('--groundtruthFile', dest='groundtruthFile', required=True,
-					help='CSV file with groundtruth')
-parser.add_argument('--parameterFile', dest='parameterFile', required=True, help='Model configuration parameters')
-parser.add_argument('--featureStart', type=int, required=False, dest='featureStart',
-					help='Specify which feature in the files to start with')
-parser.add_argument('--featureEnd', type=int, required=False, dest='featureEnd',
-					help='Specify which feature in the files to endwith')
+# parser.add_argument('--groundtruthFile', dest='groundtruthFile', required=True,
+# 					help='CSV file with groundtruth')
+# parser.add_argument('--parameterFile', dest='parameterFile', required=True, help='Model configuration parameters')
+# parser.add_argument('--featureStart', type=int, required=False, dest='featureStart',
+# 					help='Specify which feature in the files to start with')
+# parser.add_argument('--featureEnd', type=int, required=False, dest='featureEnd',
+# 					help='Specify which feature in the files to endwith')
 parser.add_argument('--scorer', type=str, required=True, dest='scorer',
 					help='Specify which scorer function to use')
 parser.add_argument('--whichsearch', type=str, required=True, dest='whichsearch',
@@ -534,7 +526,8 @@ def cross_val_probs(estimator,X,y,cv):
 # This tool accepts the data produced by the Java cStress implementation and trains and evaluates an SVM model with
 # cross-subject validation
 if __name__ == '__main__':
-	featuresused = range(args.featureStart - 1, args.featureEnd)
+    # featuresused = range(args.featureStart - 1, args.featureEnd)
+    featuresused = range(0, 37)
 
 	features = readFeatures(args.featureFolder)
 	groundtruth = readStressmarks(args.featureFolder)
@@ -559,11 +552,6 @@ if __name__ == '__main__':
 				  'C': [2 ** x for x in np.arange(-12, 12, 0.5)],
 				  'gamma': [2 ** x for x in np.arange(-12, 12, 0.5)],
 				  'class_weight': [{0: w, 1: 1 - w} for w in np.arange(0.0, 1.0, delta)]}
-	# parameters = {'kernel': ['rbf'],
-	# 			  'C': [2 ** x for x in np.arange(5, 6, 1)],
-	# 			  'gamma': [2 ** x for x in np.arange(3, 5, 1)],
-	# 			  'class_weight': [{0: w, 1: 1 - w} for w in np.arange(0.0, 1.0, delta)]}
-
 
 	svc = svm.SVC(probability=True, verbose=False, cache_size=2000)
 
