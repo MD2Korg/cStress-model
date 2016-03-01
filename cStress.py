@@ -30,12 +30,22 @@ from pathlib import Path
 import math
 import numpy as np
 import scipy
+from pprint import pprint
+import time
+from collections import Mapping, namedtuple, Sized
+
 from sklearn import svm, metrics, cross_validation, preprocessing
 from sklearn.cross_validation import LabelKFold
 from sklearn import grid_search
-from pprint import pprint
+from sklearn.grid_search import GridSearchCV,RandomizedSearchCV,ParameterSampler,ParameterGrid
+from sklearn.externals.joblib import Parallel, delayed
+from sklearn.base import clone,is_classifier
+from sklearn.utils.validation import _num_samples, indexable
+from sklearn.cross_validation import check_cv
+
 import json
 from json import JSONEncoder
+
 
 # Command line parameter configuration
 
@@ -49,8 +59,181 @@ parser.add_argument('--featureStart', type=int, required=False, dest='featureSta
 					help='Specify which feature in the files to start with')
 parser.add_argument('--featureEnd', type=int, required=False, dest='featureEnd',
 					help='Specify which feature in the files to endwith')
+parser.add_argument('--scorer', type=str, required=True, dest='scorer',
+					help='Specify which scorer function to use')
+parser.add_argument('--whichsearch', type=str, required=True, dest='whichsearch',
+					help='Specify which search function to use (GridSearch or RandomizedSearch')
+parser.add_argument('--n_iter', type=int, required=False, dest='n_iter',
+					help='If Randomized Search is used, how many iterations to use')
 
 args = parser.parse_args()
+
+
+
+def cv_fit_and_score(estimator, X, y, scorer, parameters, cv,):
+	"""Fit estimator and compute scores for a given dataset split.
+	Parameters
+	----------
+	estimator : estimator object implementing 'fit'
+		The object to use to fit the data.
+	X : array-like of shape at least 2D
+		The data to fit.
+	y : array-like, optional, default: None
+		The target variable to try to predict in the case of
+		supervised learning.
+	scorer : callable
+		A scorer callable object / function with signature
+		``scorer(estimator, X, y)``.
+	parameters : dict or None
+		Parameters to be set on the estimator.
+	cv:	Cross-validation fold indeces
+	Returns
+	-------
+	score : float
+		CV score on whole set.
+	parameters : dict or None, optional
+		The parameters that have been evaluated.
+	"""
+	estimator.set_params(**parameters)
+	cv_probs_ = cross_val_probs(estimator,X,y,cv)
+	score = scorer(cv_probs_,y)
+
+	return [score,parameters]#scoring_time]
+
+
+
+class ModifiedGridSearchCV(GridSearchCV):
+	def __init__(self, estimator, param_grid, scoring=None, fit_params=None,
+				 n_jobs=1, iid=True, refit=True, cv=None, verbose=0,
+				 pre_dispatch='2*n_jobs', error_score='raise'):
+
+		super(ModifiedGridSearchCV, self).__init__(
+			estimator, param_grid,scoring, fit_params, n_jobs, iid,
+			refit, cv, verbose, pre_dispatch, error_score)
+
+
+ 	def fit(self, X, y):
+ 		"""Actual fitting,  performing the search over parameters."""
+
+ 		parameter_iterable = ParameterGrid(self.param_grid)
+
+		estimator = self.estimator
+		cv = self.cv
+
+		n_samples = _num_samples(X)
+		X, y = indexable(X, y)
+
+		if y is not None:
+			if len(y) != n_samples:
+				raise ValueError('Target variable (y) has a different number '
+								 'of samples (%i) than data (X: %i samples)'
+								 % (len(y), n_samples))
+		cv = check_cv(cv, X, y, classifier=is_classifier(estimator))
+
+		if self.verbose > 0:
+			if isinstance(parameter_iterable, Sized):
+				n_candidates = len(parameter_iterable)
+				print("Fitting {0} folds for each of {1} candidates, totalling"
+					  " {2} fits".format(len(cv), n_candidates,
+										 n_candidates * len(cv)))
+
+		base_estimator = clone(self.estimator)
+
+		pre_dispatch = self.pre_dispatch
+
+		out = Parallel(
+			n_jobs=self.n_jobs, verbose=self.verbose,
+			pre_dispatch=pre_dispatch
+		)(
+			delayed(cv_fit_and_score)(clone(base_estimator), X, y, self.scoring,
+									parameters,cv=cv)
+				for parameters in parameter_iterable)
+
+		best = sorted(out,reverse=True)[0]
+		self.best_params_ = best[1]
+		self.best_score_ = best[0]
+
+		if self.refit:
+			# fit the best estimator using the entire dataset
+			# clone first to work around broken estimators
+			best_estimator = clone(base_estimator).set_params(
+				**best[1])
+			if y is not None:
+				best_estimator.fit(X, y, **self.fit_params)
+			else:
+				best_estimator.fit(X, **self.fit_params)
+			self.best_estimator_ = best_estimator
+
+		return self
+
+
+class ModifiedRandomizedSearchCV(RandomizedSearchCV):
+	def __init__(self, estimator, param_distributions, n_iter=10, scoring=None,
+				 fit_params=None, n_jobs=1, iid=True, refit=True, cv=None,
+				 verbose=0, pre_dispatch='2*n_jobs', random_state=None,
+				 error_score='raise'):
+
+		super(ModifiedRandomizedSearchCV, self).__init__(estimator=estimator, param_distributions=param_distributions,
+														 n_iter=n_iter, scoring=scoring,random_state = random_state,
+														 fit_params=fit_params,n_jobs=n_jobs, iid=iid, refit=refit,
+														 cv=cv, verbose=verbose,pre_dispatch=pre_dispatch, error_score=error_score)
+
+
+	def fit(self, X, y):
+		"""Actual fitting,  performing the search over parameters."""
+
+		parameter_iterable = ParameterSampler(self.param_distributions,
+										  self.n_iter,
+										  random_state=self.random_state)
+		estimator = self.estimator
+		cv = self.cv
+
+		n_samples = _num_samples(X)
+		X, y = indexable(X, y)
+
+		if y is not None:
+			if len(y) != n_samples:
+				raise ValueError('Target variable (y) has a different number '
+								 'of samples (%i) than data (X: %i samples)'
+								 % (len(y), n_samples))
+		cv = check_cv(cv, X, y, classifier=is_classifier(estimator))
+
+		if self.verbose > 0:
+			if isinstance(parameter_iterable, Sized):
+				n_candidates = len(parameter_iterable)
+				print("Fitting {0} folds for each of {1} candidates, totalling"
+					  " {2} fits".format(len(cv), n_candidates,
+										 n_candidates * len(cv)))
+
+		base_estimator = clone(self.estimator)
+
+		pre_dispatch = self.pre_dispatch
+
+		out = Parallel(
+			n_jobs=self.n_jobs, verbose=self.verbose,
+			pre_dispatch=pre_dispatch
+		)(
+			delayed(cv_fit_and_score)(clone(base_estimator), X, y, self.scoring,
+									parameters,cv=cv)
+				for parameters in parameter_iterable)
+
+		best = sorted(out,reverse=True)[0]
+		self.best_params_ = best[1]
+		self.best_score_ = best[0]
+
+		if self.refit:
+			# fit the best estimator using the entire dataset
+			# clone first to work around broken estimators
+			best_estimator = clone(base_estimator).set_params(
+				**best[1])
+			if y is not None:
+				best_estimator.fit(X, y, **self.fit_params)
+			else:
+				best_estimator.fit(X, **self.fit_params)
+			self.best_estimator_ = best_estimator
+
+		return self
+
 
 
 def decodeLabel(label):
@@ -198,7 +381,68 @@ def f1Bias_scorer(estimator, X, y,ret_bias=False):
 		return f1
 
 
-def f1Bias_scorer_CV(probs, y):
+def Twobias_scorer_CV(probs, y,ret_bias=False):
+
+
+	db = np.transpose(np.vstack([probs,y]))
+	db = db[np.argsort(db[:,0]),:]
+
+	pos = np.sum(y == 1)
+	n = len(y)
+	neg = n-pos
+	tp,tn = pos , 0
+	lost = 0
+
+	optbias = []
+	minloss = 1
+
+	for i in range(n):
+#		p = db[i,1]
+		if db[i,1]==1:				 #positive
+			tp-=1.0
+		else:
+			tn+=1.0
+
+#		v1 = tp/pos
+#		v2 = tn/neg
+		if tp/pos >= 0.95 and tn/neg >= 0.95:
+			optbias = [db[i,0],db[i,0]]
+			continue
+
+		running_pos = pos
+		running_neg = neg
+		running_tp = tp
+		running_tn = tn
+
+		for j in range(i+1,n):
+#			p1 = db[j,1]
+			if db[j,1]==1:				 #positive
+				running_tp -= 1.0
+				running_pos -= 1
+			else:
+				running_neg -= 1
+
+			lost = (j-i)*1.0/n
+			if running_pos == 0 or running_neg == 0:
+				break
+
+#			v1 = running_tp/running_pos
+#			v2 = running_tn/running_neg
+
+			if running_tp/running_pos >= 0.95 and running_tn/running_neg >= 0.95 and lost < minloss:
+				minloss = lost
+				optbias = [db[i,0],db[j,0]]
+
+
+	if ret_bias:
+		return -minloss,optbias
+	else:
+		return -minloss
+
+
+
+
+def f1Bias_scorer_CV(probs, y,ret_bias=False):
 
 	precision, recall, thresholds = metrics.precision_recall_curve(y, probs)
 
@@ -210,7 +454,10 @@ def f1Bias_scorer_CV(probs, y):
 				f1 = f
 				bias = thresholds[i]
 
-	return f1,bias
+	if ret_bias:
+		return f1,bias
+	else:
+		return f1
 
 
 def svmOutput(filename, traindata, trainlabels):
@@ -276,7 +523,7 @@ def saveModel(filename,model,normparams,bias=0.5):
 def cross_val_probs(estimator,X,y,cv):
 	probs = np.zeros(len(y))
 
-	for i, (train, test) in enumerate(cv):
+	for train, test in cv:
 		temp = estimator.fit(X[train], y[train]).predict_proba(X[test])
 		probs[test] = temp[:,1]
 
@@ -298,81 +545,65 @@ if __name__ == '__main__':
 	traindata = np.asarray(traindata,dtype=np.float64)
 	trainlabels = np.asarray(trainlabels)
 
-	#svmOutput('svmDataFile.txt',traindata, trainlabels)
 
 
-	# fit the model
-
-	clf = svm.SVC(C=0.70710678118654757, cache_size=2000,
-				  class_weight={0: 0.20000000000000001, 1: 0.80000000000000004},
-				  coef0=0.0,decision_function_shape=None, degree=3, gamma=2.8284271247461903,
-				  kernel='rbf', max_iter=-1, probability=True, random_state=None,
-				  shrinking=True, tol=0.001, verbose=False)
-
-	'''
-    clf = svm.SVC(C=0.53000000000000003, cache_size=200,
-				 class_weight={0: 0.28000000000000003, 1: 0.71999999999999997}, coef0=0.0,
-				  decision_function_shape=None, degree=3, gamma=0.75, kernel='rbf',
-				  max_iter=-1, probability=True, random_state=None, shrinking=True,
-				  tol=0.001, verbose=False)
-	'''
 	normalizer = preprocessing.StandardScaler()
 	traindata = normalizer.fit_transform(traindata)
 
-
 	lkf = LabelKFold(subjects, n_folds=len(np.unique(subjects)))
-	CV_probs = cross_val_probs(clf,traindata,trainlabels,lkf)
-
-	f1,bias = f1Bias_scorer_CV(CV_probs, trainlabels)
-	print f1,bias
-	predicted = np.asarray(CV_probs >= bias,dtype=np.int)
-
-
-	saveModel('model.txt',clf,normalizer,bias)
-
-	# Write ROC code here for Bias search and replace following code
-#	predicted = cross_validation.cross_val_predict(clf, traindata, trainlabels, cv=lkf)
-	print("Cross-Subject (" + str(len(np.unique(subjects))) + "-fold) Validation Prediction")
-	print("Accuracy: " + str(metrics.accuracy_score(trainlabels, predicted)))
-	print(metrics.classification_report(trainlabels, predicted))
-	print(metrics.confusion_matrix(trainlabels, predicted))
-	print("Subjects: " + str(np.unique(subjects)))
 
 	print("Best learned parameters")
 
 	delta = 0.1
-	parameters = {'kernel': ['linear','rbf'],
+	parameters = {'kernel': ['rbf'],
 				  'C': [2 ** x for x in np.arange(-12, 12, 0.5)],
 				  'gamma': [2 ** x for x in np.arange(-12, 12, 0.5)],
 				  'class_weight': [{0: w, 1: 1 - w} for w in np.arange(0.0, 1.0, delta)]}
-	svr = svm.SVC(probability=True, verbose=False, cache_size=2000)
+	# parameters = {'kernel': ['rbf'],
+	# 			  'C': [2 ** x for x in np.arange(5, 6, 1)],
+	# 			  'gamma': [2 ** x for x in np.arange(3, 5, 1)],
+	# 			  'class_weight': [{0: w, 1: 1 - w} for w in np.arange(0.0, 1.0, delta)]}
 
-	# clf = grid_search.GridSearchCV(svr, parameters, cv=lkf, n_jobs=-1, scoring='f1', verbose=1, iid=False)
-	clf = grid_search.RandomizedSearchCV(svr, parameters, cv=lkf, n_jobs=-1, scoring=f1Bias_scorer, n_iter=100,
+
+	svc = svm.SVC(probability=True, verbose=False, cache_size=2000)
+
+
+	if args.scorer == 'f1':
+		scorer = f1Bias_scorer_CV
+	else:
+		scorer = Twobias_scorer_CV
+
+
+	if args.whichsearch == 'grid':
+		clf = ModifiedGridSearchCV(svc, parameters, cv=lkf, n_jobs=-1, scoring=scorer, verbose=1, iid=False)
+	else:
+		clf = ModifiedRandomizedSearchCV(estimator=svc, param_distributions=parameters, cv=lkf, n_jobs=-1, scoring=scorer, n_iter=args.n_iter,
 										 verbose=1, iid=False)
-	# write custom scoring function for ROC-bias optimization
 
 	clf.fit(traindata, trainlabels)
+	pprint(clf.best_params_)
 
 
 	CV_probs = cross_val_probs(clf.best_estimator_,traindata,trainlabels,lkf)
+	score,bias = scorer(CV_probs, trainlabels,True)
+	print score,bias
+	if not bias == []:
+		saveModel('model.txt',clf.best_estimator_,normalizer,bias)
 
-	f1,bias = f1Bias_scorer_CV(CV_probs, trainlabels)
-	print f1,bias
-	saveModel('model.txt',clf.best_estimator_,normalizer,bias)
+		n = len(trainlabels)
 
+		if args.scorer == 'f1':
+			predicted = np.asarray(CV_probs >= bias,dtype=np.int)
+			classified = range(n)
+		else:
+			classified = np.where(np.logical_or(CV_probs <= bias[0],CV_probs >= bias[1]))[0]
+			predicted = np.asarray(CV_probs[classified]>=bias[1],dtype=np.int)
 
-	predicted = np.asarray(CV_probs >= bias,dtype=np.int)
-	print("Cross-Subject (" + str(len(np.unique(subjects))) + "-fold) Validation Prediction")
-	print("Accuracy: " + str(metrics.accuracy_score(trainlabels, predicted)))
-	print(metrics.classification_report(trainlabels, predicted))
-	print(metrics.confusion_matrix(trainlabels, predicted))
-	print("Subjects: " + str(np.unique(subjects)))
-
-	resultProbabilities = CV_probs
-
-	# pprint(clf.get_params())
-	pprint(clf.best_estimator_)
-
-
-	pprint(clf.grid_scores_)
+		print("Cross-Subject (" + str(len(np.unique(subjects))) + "-fold) Validation Prediction")
+		print("Accuracy: " + str(metrics.accuracy_score(trainlabels[classified], predicted)))
+		print(metrics.classification_report(trainlabels[classified], predicted))
+		print(metrics.confusion_matrix(trainlabels[classified], predicted))
+		print("Lost: %d (%f%%)" % (n - len(classified),(n - len(classified))*1.0/n))
+		print("Subjects: " + str(np.unique(subjects)))
+	else:
+		print "Results not good"
