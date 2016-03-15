@@ -44,20 +44,18 @@ from sklearn.utils.validation import _num_samples, indexable
 parser = argparse.ArgumentParser(description='Train and evaluate the cStress model')
 parser.add_argument('--featureFolder', dest='featureFolder', required=True,
                     help='Directory containing feature files')
-# parser.add_argument('--groundtruthFile', dest='groundtruthFile', required=True,
-# 					help='CSV file with groundtruth')
-# parser.add_argument('--parameterFile', dest='parameterFile', required=True, help='Model configuration parameters')
-# parser.add_argument('--featureStart', type=int, required=False, dest='featureStart',
-# 					help='Specify which feature in the files to start with')
-# parser.add_argument('--featureEnd', type=int, required=False, dest='featureEnd',
-# 					help='Specify which feature in the files to endwith')
 parser.add_argument('--scorer', type=str, required=True, dest='scorer',
-                    help='Specify which scorer function to use')
+                    help='Specify which scorer function to use (f1 or twobias)')
 parser.add_argument('--whichsearch', type=str, required=True, dest='whichsearch',
                     help='Specify which search function to use (GridSearch or RandomizedSearch')
 parser.add_argument('--n_iter', type=int, required=False, dest='n_iter',
                     help='If Randomized Search is used, how many iterations to use')
-
+parser.add_argument('--modelOutput', type=str, required=True, dest='modelOutput',
+                    help='Model file to write')
+parser.add_argument('--featureFile', type=str, required=True, dest='featureFile',
+                    help='Feature vector file name')
+parser.add_argument('--stressFile', type=str, required=True, dest='stressFile',
+                    help='Stress ground truth filename')
 args = parser.parse_args()
 
 
@@ -232,11 +230,11 @@ def decodeLabel(label):
     return mapping[label]
 
 
-def readFeatures(folder):
+def readFeatures(folder, filename):
     features = []
 
     path = Path(folder)
-    files = list(path.glob('**/org.md2k.cstress.fv.csv'))
+    files = list(path.glob('**/' + filename))
 
     for f in files:
         participantID = int(f.parent.name[2:])
@@ -252,11 +250,11 @@ def readFeatures(folder):
     return features
 
 
-def readStressmarks(folder):
+def readStressmarks(folder, filename):
     features = []
 
     path = Path(folder)
-    files = list(path.glob('**/stress_marks.txt'))
+    files = list(path.glob('**/' + filename))
 
     for f in files:
         participantID = int(f.parent.name[2:])
@@ -267,17 +265,6 @@ def readStressmarks(folder):
                 label = parts[0][:2]
                 features.append([participantID, label, int(parts[2]), int(parts[3])])
 
-    return features
-
-
-def readGroundtruth(file):
-    features = []
-
-    with open(file) as file:
-        for line in file.readlines():
-            parts = [int(x.strip()) for x in line.split(',')]
-
-            features.append(parts)
     return features
 
 
@@ -512,14 +499,10 @@ def cross_val_probs(estimator, X, y, cv):
 # This tool accepts the data produced by the Java cStress implementation and trains and evaluates an SVM model with
 # cross-subject validation
 if __name__ == '__main__':
-    # featuresused = range(args.featureStart - 1, args.featureEnd)
-    featuresused = range(0, 37)
-
-    features = readFeatures(args.featureFolder)
-    groundtruth = readStressmarks(args.featureFolder)
+    features = readFeatures(args.featureFolder, args.featureFile)
+    groundtruth = readStressmarks(args.featureFolder, args.stressFile)
 
     traindata, trainlabels, subjects = analyze_events_with_features(features, groundtruth)
-    traindata = reduceData(traindata, featuresused)
 
     traindata = np.asarray(traindata, dtype=np.float64)
     trainlabels = np.asarray(trainlabels)
@@ -528,8 +511,6 @@ if __name__ == '__main__':
     traindata = normalizer.fit_transform(traindata)
 
     lkf = LabelKFold(subjects, n_folds=len(np.unique(subjects)))
-
-    print("Best learned parameters")
 
     delta = 0.1
     parameters = {'kernel': ['rbf'],
@@ -558,7 +539,7 @@ if __name__ == '__main__':
     score, bias = scorer(CV_probs, trainlabels, True)
     print score, bias
     if not bias == []:
-        saveModel('model.txt', clf.best_estimator_, normalizer, bias)
+        saveModel(args.modelOutput, clf.best_estimator_, normalizer, bias)
 
         n = len(trainlabels)
 
