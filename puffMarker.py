@@ -260,6 +260,63 @@ def readPuffMarkerGroundtruth(folder, filename):
     return features
 
 
+def readSmokingEpisodeStartEndTIme(folder, filename):
+    epiStartTime = []
+    epiEndTime = []
+
+    path = Path(folder)
+    files = list(path.glob('p*/s*/' + filename))
+
+    for f in files:
+        participantID = int(f.parent.parent.name[1:])
+
+        with f.open() as file:
+            for line in file.readlines():
+                parts = [x.strip() for x in line.split(',')]
+                epiStartTime.append(int(float(parts[0])));
+                epiEndTime.append(int(float(parts[1])));
+                # features.append([participantID, int(float(parts[0]))])
+
+    return epiStartTime, epiEndTime
+
+
+# analyze_events_with_features_filter_episode(features, groundtruth, epiStartTime, epiEndTime)
+
+def analyze_events_with_features_filter_episode(features, puff_marks, epiStartTime, epiEndTime):
+    featureLabels = []
+    finalFeatures = []
+    subjects = []
+    cnt01 = 0;
+
+    for line in features:
+        id = line[0]
+        starttime = line[1]
+        endtime = line[2]
+        f = line[3:]
+
+        found = 0
+        for puffID, puffTS in puff_marks:
+            if puffTS >= starttime and puffTS <= endtime:
+                found = 1
+                break
+
+        if found == 0:
+            inside = 0
+            for i in range(0, len(epiStartTime)):
+                if starttime >= epiStartTime[i] and starttime <= epiEndTime[i]:
+                    inside = 1
+                    break
+            if inside == 1:
+                continue
+
+        cnt01 = cnt01 + 1
+        featureLabels.append(found)
+        finalFeatures.append(f)
+        subjects.append(id)
+
+    cnt01
+    return finalFeatures, featureLabels, subjects
+
 def analyze_events_with_features(features, puff_marks):
     featureLabels = []
     finalFeatures = []
@@ -466,13 +523,31 @@ def cross_val_probs(estimator, X, y, cv):
     return probs
 
 
+def writeToFile(traindatas, trainlabels):
+    f = open('featureFile_new.csv', 'w')
+    i = 0
+    for line in traindatas:
+        for word in line:
+            f.write(str(word))
+            f.write(',')
+        f.write(str(trainlabels[i]))
+        f.write('\n')
+        i += 1
+    f.close()
+
 # This tool accepts the data produced by the Java cStress implementation and trains and evaluates an SVM model with
 # cross-subject validation
 if __name__ == '__main__':
     features = readFeatures(args.featureFolder, args.featureFile)
     groundtruth = readPuffMarkerGroundtruth(args.featureFolder, args.puffGroundtruth)
 
-    traindata, trainlabels, subjects = analyze_events_with_features(features, groundtruth)
+    epiStartTime, epiEndTime = readSmokingEpisodeStartEndTIme(args.featureFolder, '*episode_start_end.csv')
+
+    # traindata, trainlabels, subjects = analyze_events_with_features(features, groundtruth)
+    traindata, trainlabels, subjects = analyze_events_with_features_filter_episode(features, groundtruth, epiStartTime,
+                                                                                   epiEndTime)
+
+    writeToFile(traindata, trainlabels)
 
     traindata = np.asarray(traindata, dtype=np.float64)
     trainlabels = np.asarray(trainlabels)
@@ -483,6 +558,11 @@ if __name__ == '__main__':
     lkf = LabelKFold(subjects, n_folds=len(np.unique(subjects)))
 
     delta = 0.1
+    # parameters = {'kernel': ['rbf'],
+    #               'C': [2 ** x for x in np.arange(-12, 12, 0.5)],
+    #               'gamma': [2 ** x for x in np.arange(-12, 12, 0.5)],
+    #               'class_weight': [{0: 0.1, 1: 0.9}]}
+
     parameters = {'kernel': ['rbf'],
                   'C': [2 ** x for x in np.arange(-12, 12, 0.5)],
                   'gamma': [2 ** x for x in np.arange(-12, 12, 0.5)],
@@ -490,10 +570,10 @@ if __name__ == '__main__':
 
     svc = svm.SVC(probability=True, verbose=False, cache_size=2000)
 
-    if args.scorer == 'f1':
-        scorer = f1Bias_scorer_CV
-    else:
-        scorer = Twobias_scorer_CV
+    # if args.scorer == 'f1':
+    #     scorer = f1Bias_scorer_CV
+    # else:
+    scorer = Twobias_scorer_CV
 
     if args.whichsearch == 'grid':
         clf = ModifiedGridSearchCV(svc, parameters, cv=lkf, n_jobs=-1, scoring=scorer, verbose=1, iid=False)
@@ -502,8 +582,17 @@ if __name__ == '__main__':
                                          scoring=scorer, n_iter=args.n_iter,
                                          verbose=1, iid=False)
 
+    # if args.whichsearch == 'grid':
+    #     clf = ModifiedGridSearchCV(svc, parameters, cv=lkf, n_jobs=-1, scoring=scorer, verbose=1, iid=False)
+    # else:
+    #     clf = ModifiedRandomizedSearchCV(estimator=svc, param_distributions=parameters, cv=lkf, n_jobs=-1,
+    #                                      scoring=scorer, n_iter=args.n_iter,
+    #                                      verbose=1, iid=False)
+
     clf.fit(traindata, trainlabels)
     pprint(clf.best_params_)
+
+    scorer = f1Bias_scorer_CV
 
     CV_probs = cross_val_probs(clf.best_estimator_, traindata, trainlabels, lkf)
     score, bias = scorer(CV_probs, trainlabels, True)
